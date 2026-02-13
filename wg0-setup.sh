@@ -14,7 +14,9 @@ readonly BLUE="\e[34m"
 readonly NC="\e[0m"
 
 # Script constants
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Handle both local and piped execution (curl | bash)
+SCRIPT_SOURCE="${BASH_SOURCE[0]:-$0}"
+readonly SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd || echo "$PWD")"
 WG_CONF_SOURCE=""  # Will be set in check_config_file()
 readonly WG_CONF_DEST="/etc/wireguard/wg0.conf"
 readonly WG_INTERFACE="wg0"
@@ -126,7 +128,6 @@ install_packages() {
     sudo apt-get install -y \
         wireguard-tools \
         openresolv \
-        resolvconf \
         dnsmasq \
         unattended-upgrades \
         apt-listchanges \
