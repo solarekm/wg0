@@ -15,7 +15,7 @@ readonly NC="\e[0m"
 
 # Script constants
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly WG_CONF_SOURCE="$SCRIPT_DIR/wg_client.conf"
+WG_CONF_SOURCE=""  # Will be set in check_config_file()
 readonly WG_CONF_DEST="/etc/wireguard/wg0.conf"
 readonly WG_INTERFACE="wg0"
 readonly ETH_INTERFACE="eth0"
@@ -76,13 +76,25 @@ check_sudo() {
 
 # Check if WireGuard configuration file exists
 check_config_file() {
-    if [[ ! -f "$WG_CONF_SOURCE" ]]; then
-        log_error "Configuration file not found: $WG_CONF_SOURCE"
-        log_error "Please ensure wg_client.conf exists in the same directory as this script"
-        exit 1
+    # Check in current directory first (for curl execution)
+    if [[ -f "$PWD/wg_client.conf" ]]; then
+        WG_CONF_SOURCE="$PWD/wg_client.conf"
+        log_info "Found configuration file: $WG_CONF_SOURCE"
+        return 0
     fi
     
-    log_info "Found configuration file: $WG_CONF_SOURCE"
+    # Check in script directory (for local execution)
+    if [[ -f "$SCRIPT_DIR/wg_client.conf" ]]; then
+        WG_CONF_SOURCE="$SCRIPT_DIR/wg_client.conf"
+        log_info "Found configuration file: $WG_CONF_SOURCE"
+        return 0
+    fi
+    
+    # Not found in either location
+    log_error "Configuration file not found: wg_client.conf"
+    log_error "Please ensure wg_client.conf exists in the current directory"
+    log_error "Current directory: $PWD"
+    exit 1
 }
 
 # Extract DNS server from wg_client.conf
