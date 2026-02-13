@@ -153,48 +153,125 @@ enable_ip_forwarding() {
     log_success "IP forwarding activated"
 }
 
-# Configure eth0 with static IP
+# Configure eth0 with static IP (persistent configuration)
 configure_eth0() {
     log_info "Configuring $ETH_INTERFACE with static IP..."
     
-    # Check if interface exists
+    # Check if interface exists (physical interface, cable not required)
     if ! ip link show "$ETH_INTERFACE" &> /dev/null; then
         log_warn "Interface $ETH_INTERFACE not found. Skipping eth0 configuration."
         log_warn "You may need to configure it manually for DHCP server functionality."
         return 0
     fi
     
-    # Configure using nmcli if available
-    if command -v nmcli &> /dev/null; then
-        local connection_name=$(nmcli -t -f NAME,DEVICE connection show | grep ":$ETH_INTERFACE$" | cut -d: -f1 | head -n1)
+    log_info "Found interface $ETH_INTERFACE (cable connection not required)"
+    
+    # Try NetworkManager first (Ubuntu Desktop)
+    if command -v nmcli &> /dev/null && systemctl is-active --quiet NetworkManager 2>/dev/null; then
+        log_info "Using NetworkManager for persistent configuration..."
         
-        if [[ -n "$connection_name" ]]; then
-            log_info "Configuring connection: $connection_name"
+        # Check if connection exists
+        local connection_name=$(nmcli -t -f NAME,DEVICE connection show | grep ":$ETH_INTERFACE\$" | cut -d: -f1 | head -n1)
+        
+        if [[ -z "$connection_name" ]]; then
+            # Create new connection
+            log_info "Creating new NetworkManager connection for $ETH_INTERFACE"
+            sudo nmcli connection add \
+                type ethernet \
+                ifname "$ETH_INTERFACE" \
+                con-name "eth0-static" \
+                ipv4.method manual \
+                ipv4.addresses "$ETH_IP" || {
+                log_warn "Failed to create NetworkManager connection"
+                return 1
+            }
+            connection_name="eth0-static"
+        else
+            # Modify existing connection
+            log_info "Modifying existing connection: $connection_name"
             sudo nmcli connection modify "$connection_name" \
                 ipv4.method manual \
-                ipv4.addresses "$ETH_IP" || true
-            sudo nmcli connection up "$connection_name" || true
-            log_success "Ethernet interface configured"
-        else
-            log_warn "No NetworkManager connection found for $ETH_INTERFACE"
-            log_warn "Setting IP manually with ip command..."
-            sudo ip addr add "$ETH_IP" dev "$ETH_INTERFACE" 2>/dev/null || true
-            sudo ip link set "$ETH_INTERFACE" up
+                ipv4.addresses "$ETH_IP" || {
+                log_warn "Failed to modify NetworkManager connection"
+                return 1
+            }
         fi
+        
+        # Activate connection (will work even without cable)
+        sudo nmcli connection up "$connection_name" 2>/dev/null || true
+        log_success "NetworkManager configuration applied (persistent)"
+        
+    # Try systemd-networkd (Raspberry Pi, Ubuntu Server)
+    elif command -v networkctl &> /dev/null; then
+        log_info "Using systemd-networkd for persistent configuration..."
+        
+        # Create systemd-networkd configuration
+        sudo mkdir -p /etc/systemd/network
+        sudo tee /etc/systemd/network/10-eth0-static.network > /dev/null << EOF
+[Match]
+Name=$ETH_INTERFACE
+
+[Network]
+Address=$ETH_IP
+EOF
+        
+        # Enable and restart systemd-networkd
+        sudo systemctl enable systemd-networkd 2>/dev/null || true
+        sudo systemctl restart systemd-networkd || {
+            log_warn "Failed to restart systemd-networkd, trying to start..."
+            sudo systemctl start systemd-networkd || true
+        }
+        
+        log_success "systemd-networkd configuration applied (persistent)"
+        
+    # Fallback to /etc/network/interfaces (Classic Debian)
+    elif [[ -d /etc/network ]]; then
+        log_info "Using /etc/network/interfaces for persistent configuration..."
+        
+        # Backup existing configuration
+        if [[ -f /etc/network/interfaces ]]; then
+            sudo cp /etc/network/interfaces /etc/network/interfaces.backup.$(date +%Y%m%d_%H%M%S)
+        fi
+        
+        # Remove existing eth0 configuration
+        sudo sed -i "/iface $ETH_INTERFACE/,/^$/d" /etc/network/interfaces 2>/dev/null || true
+        
+        # Add static configuration
+        sudo tee -a /etc/network/interfaces > /dev/null << EOF
+
+# Static configuration for $ETH_INTERFACE (WireGuard Router)
+auto $ETH_INTERFACE
+iface $ETH_INTERFACE inet static
+    address 192.168.10.1
+    netmask 255.255.255.0
+EOF
+        
+        # Bring interface up with new configuration
+        sudo ifdown "$ETH_INTERFACE" 2>/dev/null || true
+        sudo ifup "$ETH_INTERFACE" 2>/dev/null || true
+        
+        log_success "/etc/network/interfaces configuration applied (persistent)"
     else
-        # Fallback to ip command
-        log_info "NetworkManager not available, using ip command..."
-        sudo ip addr flush dev "$ETH_INTERFACE" 2>/dev/null || true
-        sudo ip addr add "$ETH_IP" dev "$ETH_INTERFACE" 2>/dev/null || true
-        sudo ip link set "$ETH_INTERFACE" up
-        log_success "Ethernet interface configured with ip command"
+        log_warn "No supported network manager found"
+        log_warn "Falling back to temporary configuration with ip command..."
     fi
     
-    # Verify configuration
-    if ip addr show "$ETH_INTERFACE" | grep -q "192.168.10.1"; then
-        log_success "Ethernet interface verified: $(ip -br addr show $ETH_INTERFACE)"
+    # Always try to apply IP immediately (even if persistent config is set)
+    sudo ip addr flush dev "$ETH_INTERFACE" 2>/dev/null || true
+    sudo ip addr add "$ETH_IP" dev "$ETH_INTERFACE" 2>/dev/null || true
+    sudo ip link set "$ETH_INTERFACE" up 2>/dev/null || true
+    
+    # Verify configuration (might show "no carrier" if cable not connected - that's OK)
+    sleep 1
+    local eth_status=$(ip -br addr show "$ETH_INTERFACE" 2>/dev/null || echo "unknown")
+    if echo "$eth_status" | grep -q "192.168.10.1"; then
+        log_success "Interface configured: $eth_status"
+        if echo "$eth_status" | grep -qi "no-carrier\|down"; then
+            log_info "Note: Cable not connected - DHCP will work when cable is plugged in"
+        fi
     else
-        log_warn "Could not verify $ETH_INTERFACE IP configuration"
+        log_warn "Could not verify IP assignment. Status: $eth_status"
+        log_warn "Configuration saved but IP not active. Check after plugging cable."
     fi
 }
 
@@ -350,6 +427,9 @@ configure_dnsmasq() {
 # Interface to listen on
 interface=$ETH_INTERFACE
 
+# Bind to interface dynamically (works even if interface is down)
+bind-dynamic
+
 # DHCP range for LAN devices
 dhcp-range=$DHCP_RANGE_START,$DHCP_RANGE_END,255.255.255.0,24h
 
@@ -368,7 +448,8 @@ EOF
     sudo tee /etc/systemd/system/dnsmasq.service > /dev/null << 'EOF'
 [Unit]
 Description=dnsmasq - A lightweight DHCP and caching DNS server
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=forking
@@ -377,6 +458,7 @@ ExecStartPre=/usr/sbin/dnsmasq --test
 ExecStart=/usr/sbin/dnsmasq
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

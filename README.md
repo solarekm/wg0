@@ -119,6 +119,8 @@ For full router functionality:
 - WiFi or another network interface for internet connection
 - Sufficient resources to handle NAT and firewall operations
 
+**Note:** Ethernet cable does NOT need to be connected during installation. The script will configure the interface, and DHCP will work automatically when you plug in a cable later.
+
 ---
 
 ## 📊 Architecture
@@ -398,6 +400,39 @@ sudo journalctl -k | grep "DROP"
 ---
 
 ## 🐛 Troubleshooting
+
+### eth0 Has No Address (DHCP Not Working)
+
+**Symptom:** Clients don't receive IP addresses. dnsmasq logs show:
+```
+DHCP packet received on eth0 which has no address
+```
+
+**Cause:** eth0 lost its IP address (NetworkManager or systemd-networkd removed it).
+
+**Solution:**
+```bash
+# Check current eth0 status
+ip addr show eth0
+
+# Manually assign IP
+sudo ip addr add 192.168.10.1/24 dev eth0
+sudo ip link set eth0 up
+
+# Restart dnsmasq
+sudo systemctl restart dnsmasq
+
+# For permanent fix with systemd-networkd:
+sudo tee /etc/systemd/network/10-eth0-static.network > /dev/null << EOF
+[Match]
+Name=eth0
+
+[Network]
+Address=192.168.10.1/24
+EOF
+
+sudo systemctl restart systemd-networkd
+```
 
 ### Client Gets 169.254.x.x Address
 
