@@ -138,19 +138,30 @@ install_packages() {
     log_success "All packages installed successfully"
 }
 
-# Enable IP forwarding
+# Enable IP forwarding (persistent, overrides Raspberry Pi defaults)
 enable_ip_forwarding() {
     log_info "Enabling IP forwarding..."
     
-    if grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
-        log_info "IP forwarding already enabled in sysctl.conf"
-    else
+    # Create sysctl.d file that overrides defaults (loaded after 98-rpi.conf)
+    sudo tee /etc/sysctl.d/99-wireguard-router.conf > /dev/null << 'EOF'
+# WireGuard Router - IP Forwarding
+# This file overrides system defaults (e.g., /etc/sysctl.d/98-rpi.conf)
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.src_valid_mark=1
+EOF
+    
+    sudo chmod 644 /etc/sysctl.d/99-wireguard-router.conf
+    
+    # Apply immediately
+    sudo sysctl -w net.ipv4.ip_forward=1 > /dev/null 2>&1
+    sudo sysctl -w net.ipv4.conf.all.src_valid_mark=1 > /dev/null 2>&1
+    
+    # Also add to /etc/sysctl.conf as fallback
+    if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf 2>/dev/null; then
         echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf > /dev/null
-        log_success "IP forwarding enabled in sysctl.conf"
     fi
     
-    sudo sysctl -w net.ipv4.ip_forward=1 > /dev/null
-    log_success "IP forwarding activated"
+    log_success "IP forwarding enabled persistently (survives reboot)"
 }
 
 # Configure eth0 with static IP (persistent configuration)
@@ -361,6 +372,38 @@ EOF
     fi
 }
 
+# Enable nftables persistence (so rules survive reboot)
+enable_nftables_persistence() {
+    log_info "Enabling nftables persistence..."
+    
+    # Load firewall rules now
+    if sudo nft -f /etc/nftables/firewall.nft; then
+        log_success "Firewall rules loaded"
+    else
+        log_warn "Failed to load firewall rules (WireGuard PostUp will load them)"
+    fi
+    
+    # Enable nftables service (loads rules on boot)
+    if systemctl list-unit-files | grep -q "nftables.service"; then
+        sudo systemctl enable nftables 2>/dev/null || true
+        log_info "nftables service enabled for persistence"
+    else
+        log_info "nftables.service not available (rules loaded by WireGuard PostUp)"
+    fi
+    
+    # Create systemd override to load our firewall
+    sudo mkdir -p /etc/systemd/system/nftables.service.d
+    sudo tee /etc/systemd/system/nftables.service.d/wireguard-router.conf > /dev/null << EOF
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/nft -f /etc/nftables/firewall.nft
+EOF
+    
+    sudo systemctl daemon-reload
+    
+    log_success "Firewall persistence configured"
+}
+
 # Configure WireGuard with PostUp/PreDown hooks
 configure_wireguard() {
     log_info "Configuring WireGuard..."
@@ -541,18 +584,36 @@ verify_installation() {
         log_error "✗ IP forwarding is disabled"
     fi
     
-    # Check firewall
-    if sudo nft list ruleset | grep -q "inet filter"; then
-        log_success "✓ Firewall (nftables) is loaded"
+    # Check IP forwarding persistence
+    if [[ -f /etc/sysctl.d/99-wireguard-router.conf ]]; then
+        log_success "✓ IP forwarding configured persistently"
     else
-        log_warn "⚠ Firewall may not be loaded"
+        log_warn "⚠ IP forwarding may not persist after reboot"
     fi
     
-    # Check NAT
-    if sudo nft list ruleset | grep -q "nat postrouting"; then
-        log_success "✓ NAT is configured"
+    # Check firewall
+    if sudo nft list tables 2>/dev/null | grep -q "inet.*filter"; then
+        log_success "✓ Firewall (nftables) is loaded"
     else
-        log_warn "⚠ NAT may not be configured"
+        log_warn "⚠ Firewall not loaded (will load on WireGuard start)"
+    fi
+    
+    # Check NAT table
+    if sudo nft list tables 2>/dev/null | grep -q "ip.*nat"; then
+        if sudo nft list table ip nat 2>/dev/null | grep -q "masquerade"; then
+            log_success "✓ NAT configured and active"
+        else
+            log_warn "⚠ NAT table exists but masquerade rule missing"
+        fi
+    else
+        log_warn "⚠ NAT table not loaded (will load on WireGuard start)"
+    fi
+    
+    # Check routing rule
+    if ip rule list | grep -q "from 192.168.10.0/24"; then
+        log_success "✓ LAN routing rule active"
+    else
+        log_warn "⚠ LAN routing rule not active (will activate on WireGuard start)"
     fi
     
     # Check services
@@ -622,6 +683,7 @@ main() {
     enable_ip_forwarding
     configure_eth0
     create_firewall
+    enable_nftables_persistence
     configure_wireguard
     configure_dnsmasq
     configure_unattended_upgrades
