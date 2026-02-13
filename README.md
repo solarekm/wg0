@@ -471,29 +471,14 @@ sudo systemctl restart wg-quick@wg0
 
 **Cause:** Firewall blocks SSH access from WiFi/WAN interface.
 
-**Solution (requires physical access or serial console):**
+**Solution:**
 ```bash
-# Temporarily disable firewall to regain SSH access
+# Disable firewall temporarily
 sudo nft flush ruleset
 
-# Stop WireGuard to disable routing rules
-sudo systemctl stop wg-quick@wg0
-
-# Now you can SSH again from WiFi network
-# After connecting via SSH, you can:
-
-# Option 1: Add SSH rule to firewall (replace wlan0 with your WiFi interface)
-sudo nft add rule inet filter input iifname "wlan0" tcp dport 22 accept
-
-# Option 2: Permanently allow SSH on WiFi interface
-# Edit /etc/nftables/firewall.nft and add under input chain:
-# iifname "wlan0" tcp dport 22 accept
-
-# Restart WireGuard
-sudo systemctl start wg-quick@wg0
+# Enable firewall (restart WireGuard to reload rules)
+sudo systemctl restart wg-quick@wg0
 ```
-
-**Prevention:** If you need SSH access, configure it before installation or add firewall rules manually.
 
 ### Firewall Blocks Traffic
 
