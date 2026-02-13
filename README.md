@@ -13,13 +13,13 @@ Automated setup script for WireGuard VPN router with firewall, DHCP server, and 
 Run directly from GitHub without cloning:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/solarekm/wg0/main/wg0-setup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/solarekm/wg0/master/wg0-setup.sh)
 ```
 
 Or download and run locally:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/solarekm/wg0/main/wg0-setup.sh -o wg0-setup.sh
+curl -fsSL https://raw.githubusercontent.com/solarekm/wg0/master/wg0-setup.sh -o wg0-setup.sh
 chmod +x wg0-setup.sh
 ./wg0-setup.sh
 ```
