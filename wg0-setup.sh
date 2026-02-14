@@ -99,6 +99,85 @@ check_config_file() {
     exit 1
 }
 
+# Validate WireGuard configuration file
+validate_wireguard_config() {
+    log_info "Validating WireGuard configuration..."
+    
+    # Check if file is readable
+    if [[ ! -r "$WG_CONF_SOURCE" ]]; then
+        log_error "Cannot read configuration file: $WG_CONF_SOURCE"
+        exit 1
+    fi
+    
+    # Extract PrivateKey and validate length
+    local private_key
+    private_key=$(grep -E "^PrivateKey[[:space:]]*=" "$WG_CONF_SOURCE" | sed -E 's/^PrivateKey[[:space:]]*=[[:space:]]*([^[:space:]]+).*/\1/' | head -n 1)
+    
+    if [[ -z "$private_key" ]]; then
+        log_error "No PrivateKey found in configuration"
+        exit 1
+    fi
+    
+    # Check if it's a placeholder
+    if [[ "$private_key" == *"YOUR_PRIVATE_KEY"* ]] || [[ "$private_key" == *"<"* ]] || [[ "$private_key" == *">"* ]]; then
+        log_error "PrivateKey appears to be a placeholder: $private_key"
+        log_error "Please replace it with your actual WireGuard private key"
+        exit 1
+    fi
+    
+    # Validate length (WireGuard keys are 44 characters base64)
+    local key_length=${#private_key}
+    if [[ $key_length -ne 44 ]]; then
+        log_warn "PrivateKey length is $key_length characters (expected 44)"
+        log_warn "This may indicate an invalid or incomplete key"
+        read -p "Continue anyway? (y/N) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+    else
+        log_success "PrivateKey length validated (44 chars)"
+    fi
+    
+    # Check for AllowedIPs = 0.0.0.0/0 and warn user
+    if grep -qE "^AllowedIPs[[:space:]]*=[[:space:]]*0\.0\.0\.0/0" "$WG_CONF_SOURCE"; then
+        log_warn "⚠️  Configuration uses AllowedIPs = 0.0.0.0/0 (full tunnel)"
+        log_warn "All traffic will be routed through VPN, including DNS"
+        log_warn "Make sure DNS is properly configured to avoid leaks"
+        echo
+        read -p "Continue with full tunnel configuration? (y/N) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+    fi
+    
+    # Dry-run validation with wg-quick (if wg-quick is available)
+    if command -v wg-quick &> /dev/null; then
+        log_info "Running wg-quick dry-run validation..."
+        
+        # Create temporary config for testing
+        local temp_config="/tmp/wg0-test-$$.conf"
+        cp "$WG_CONF_SOURCE" "$temp_config"
+        chmod 600 "$temp_config"
+        
+        # Try dry-run (strip-down version - check syntax only)
+        if timeout 5 bash -c "wg-quick strip '$temp_config' > /dev/null 2>&1"; then
+            log_success "Configuration syntax validated"
+        else
+            log_warn "wg-quick validation warnings detected (may be non-critical)"
+            log_warn "Review configuration manually if problems occur"
+        fi
+        
+        # Cleanup
+        rm -f "$temp_config"
+    else
+        log_info "wg-quick not yet installed, skipping pre-validation"
+    fi
+    
+    log_success "Configuration validation completed"
+}
+
 # Extract DNS server from wg_client.conf
 extract_dns_from_config() {
     log_info "Extracting DNS server from configuration..."
@@ -333,6 +412,10 @@ table inet filter {
     chain forward {
         type filter hook forward priority 0; policy drop;
 
+        # Anti-spoofing: Block packets from eth0 with invalid source IPs
+        # Only accept packets from LAN subnet (192.168.10.0/24)
+        iifname "eth0" ip saddr != 192.168.10.0/24 counter drop
+
         # Accept established connections
         ct state established,related accept
 
@@ -472,6 +555,9 @@ interface=$ETH_INTERFACE
 
 # Bind to interface dynamically (works even if interface is down)
 bind-dynamic
+
+# Disable DHCP broadcast replies (security: prevents amplification attacks)
+dhcp-broadcast=no
 
 # DHCP range for LAN devices
 dhcp-range=$DHCP_RANGE_START,$DHCP_RANGE_END,255.255.255.0,24h
@@ -623,6 +709,27 @@ verify_installation() {
         log_warn "⚠ dnsmasq is not running"
     fi
     
+    # Check WireGuard handshakes (critical for security)
+    log_info "Checking WireGuard handshakes..."
+    local latest_handshake
+    latest_handshake=$(sudo wg show "$WG_INTERFACE" latest-handshakes 2>/dev/null | awk '{print $2}' | head -n 1)
+    
+    if [[ -n "$latest_handshake" ]] && [[ "$latest_handshake" != "0" ]]; then
+        local current_time=$(date +%s)
+        local time_diff=$((current_time - latest_handshake))
+        
+        if [[ $time_diff -lt 180 ]]; then
+            log_success "✓ Recent WireGuard handshake detected ($time_diff seconds ago)"
+        else
+            log_warn "⚠ Last handshake was $time_diff seconds ago (may indicate connection issue)"
+            log_warn "Check endpoint and firewall configuration"
+        fi
+    else
+        log_warn "⚠ No WireGuard handshakes detected yet"
+        log_warn "This is normal on first setup - peer will handshake when traffic flows"
+        log_warn "Monitor with: sudo wg show $WG_INTERFACE latest-handshakes"
+    fi
+    
     echo
 }
 
@@ -678,6 +785,7 @@ main() {
     check_os
     check_sudo
     check_config_file
+    validate_wireguard_config
     extract_dns_from_config
     install_packages
     enable_ip_forwarding

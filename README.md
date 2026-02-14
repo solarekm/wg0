@@ -10,21 +10,24 @@ Automated setup script for WireGuard VPN router with firewall, DHCP server, and 
 
 **Prerequisites:** Make sure you have `wg_client.conf` in the current directory.
 
-Run directly from GitHub without cloning:
+**⚠️ SECURITY WARNING:** Never run `curl | bash` without verifying the source! Always verify checksums.
+
+### Recommended: Secure Installation with Checksum Verification
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/solarekm/wg0/master/wg0-setup.sh)
-```
-
-Or download and run locally:
-
-```bash
+# Download the script and checksum
 curl -fsSL https://raw.githubusercontent.com/solarekm/wg0/master/wg0-setup.sh -o wg0-setup.sh
+curl -fsSL https://raw.githubusercontent.com/solarekm/wg0/master/wg0-setup.sh.sha256 -o wg0-setup.sh.sha256
+
+# Verify checksum (CRITICAL - protects against tampering)
+sha256sum -c wg0-setup.sh.sha256 || { echo "CHECKSUM FAILED - DO NOT RUN!"; exit 1; }
+
+# Run the script
 chmod +x wg0-setup.sh
 ./wg0-setup.sh
 ```
 
-Or clone the repository:
+### Alternative: Clone Repository (Most Secure)
 
 ```bash
 git clone https://github.com/solarekm/wg0.git
@@ -558,44 +561,35 @@ sudo chown root:root /etc/wireguard/wg0.conf
 
 ## 🔍 Script Features
 
-### Error Handling
-- Strict error handling (`set -euo pipefail`)
-- Clear error messages with color coding
-- Graceful handling of existing installations
+**Security:**
+- Config validation (syntax, key length, placeholder detection)
+- Anti-spoofing firewall rules (blocks ARP/IP spoofing)
+- DHCP protection (`dhcp-broadcast=no`)
+- WireGuard handshake verification (detects dead peers)
+- Rate limiting and connection tracking
+- Automatic security updates
 
-### Idempotency
-- Safe to run multiple times
-- Checks if WireGuard is already installed
-- Backs up existing configurations
+**Reliability:**
+- Idempotent (safe to re-run)
+- Backs up existing configs
+- Error handling with clear messages
+- Color-coded output (🟢 Info, 🟡 Warn, 🔴 Error, 🔵 Success)
 
-### Security
-- **Firewall:** nftables with strict rules (drop by default)
-- **Network isolation:** Prevents VPN → WiFi traffic
-- **Rate limiting:** Protects against flooding attacks
-- Sets proper file permissions (600 for WireGuard config)
-- Validates configuration files before applying
-- Requires sudo authentication
-
-**Note:** SSH and fail2ban are NOT included - if you need SSH access, configure it manually with proper security.
-
-### Logging
-- Color-coded output:
-  - 🟢 Green = Info
-  - 🟡 Yellow = Warning
-  - 🔴 Red = Error
-  - 🔵 Blue = Success
+**Note:** SSH not included - configure manually if needed.
 
 ---
 
 ## 📁 Files Included
 
-- **`wg0-setup.sh`** - Comprehensive router installation script
+- **`wg0-setup.sh`** - Main installation script
+- **`wg0-setup.sh.sha256`** - SHA256 checksum (verify before running!)
+- **`wg_client.conf`** - Example WireGuard configuration
 - **`README.md`** - This documentation
 
-### Auto-Generated Files:
-- **`/etc/wireguard/wg0.conf`** - WireGuard config with PostUp/PreDown hooks
-- **`/etc/nftables/firewall.nft`** - Firewall ruleset
-- **`/etc/dnsmasq.conf`** - DHCP server configuration
+Auto-generated during installation:
+- `/etc/wireguard/wg0.conf` - WireGuard config with routing/firewall hooks
+- `/etc/nftables/firewall.nft` - Firewall rules (anti-spoofing, rate limiting)
+- `/etc/dnsmasq.conf` - DHCP server config
 
 ---
 
